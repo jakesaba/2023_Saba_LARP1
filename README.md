@@ -10,4 +10,4 @@ Description of repository files:
 
 4_20231020_transcriptome_quant_eGFP_v19.Rmd is R markdown code which takes input CSV files (from 3), joins them into a large data frame, removes NAs, filters for transcripts above a certain threshold of reads, removes unmapped reads, normalizes quants to an eGFP spike-in, calculates percent RNA across the gradient, collapses quants to a single canonical transcript per gene, and constructs plots of % RNA across the gradient.
 
-20231019_qPCR-plotting.Rmd is R markdown code which constructs plots for percent RNA across the gradient (appropriate for qPCR data which has been previously normalized and formatted prior to importing into R)
+qPCR-plotting.Rmd is R markdown code which constructs plots for percent RNA across the gradient (appropriate for qPCR data which has been previously normalized and formatted prior to importing into R)
