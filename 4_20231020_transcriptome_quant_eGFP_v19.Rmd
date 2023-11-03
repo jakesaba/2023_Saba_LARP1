@@ -1,0 +1,321 @@
+---
+title: "transcriptome_quant"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. get dependencies
+```{r}
+## get dependencies
+library(tidyverse)
+library(here)
+library(stringr)
+library(ggpmisc)
+library(ggpubr)
+library(gridExtra)
+library(pracma)
+library(biomaRt)
+```
+
+
+2. Join all data together into a large data frame
+```{r}
+
+## full_join read counts from all files in the directory
+if(!file.exists(here("20231023_GEO-submission/quantification.csv"))) {
+  files <- dir(path = here::here("20231023_GEO-submission"), pattern = '/*quant_eGFP.csv')
+  count <- 0
+  big_df <- tibble()
+  for(i in files) {
+        file <- read_csv(paste(here("20231023_GEO-submission", i)))
+        file <- as_tibble(file)
+        if(count == 0) {
+                big_df <- file
+        } else {
+                big_df <- full_join(x = big_df, y = file, by = c("transcript_id" = "transcript_id"))
+        }
+        count <- count + 1
+}
+
+## separate out long id into meaningful identifiers and reorganize
+big_df <- separate(big_df, 
+                   col = transcript_id, 
+                   into = c("ens_transcript",
+                            "ens_gene",
+                            "havana_gene",
+                            "havana_transcript",
+                            "transcript_id",
+                            "gene_id",
+                            "transcript_length",
+                            "transcript_type"),
+                   sep = "\\|")
+
+ write.csv(x = big_df, file = here::here("20231023_GEO-submission/quantification.csv"))
+
+} else {
+  big_df <- read_csv(here("20231023_GEO-submission/quantification.csv"))
+
+}
+
+
+```
+
+3. Remove NA values and filter out non-abundant transcripts
+```{r}
+if(!file.exists(here("20231023_GEO-submission/quantification_filtered.csv"))) {
+  big_df <- arrange(big_df, gene_id)
+
+  ## because NA means there were 0 reads
+  big_df <- big_df %>% mutate(across(dmso_f1.fastq.gz.bam:torin_whole.fastq.gz.bam, ~replace_na(.x, 0)))
+
+  ## sum reads from each condition per transcript so that can filter out transcripts that have only a few aligned reads 
+  big_df <- big_df %>% mutate(reads_dmso = rowSums(big_df[, grep("dmso_f1", colnames(big_df)):grep("dmso_whole", colnames(big_df))]), 
+                              reads_torin = rowSums(big_df[, grep("torin_f1", colnames(big_df)):grep("torin_whole", colnames(big_df))]))
+  
+  ## filter out transcripts with fewer than 100 total reads in any of the three conditions
+  big_df <- big_df %>% filter(reads_dmso > 80,
+                              reads_torin > 80)
+  
+  write.csv(x = big_df, file = here::here("20231023_GEO-submission/quantification_filtered.csv"))
+
+  } else {
+            
+  big_df <- read_csv(here("20231023_GEO-submission/quantification_filtered.csv"))
+
+}
+
+```
+
+
+
+4. Remove unmapped reads and normalize to eGFP reads across all fractions
+Convert normalized values to % RNA across gradient
+```{r}
+if(!file.exists(here("20231023_GEO-submission/quantification_filtered_normalized.csv"))) {
+ 
+      # subtract out unmapped reads
+      big_df <- big_df %>% filter(ens_transcript != "*")
+
+      ## normalize to eGFP spike-in to control for differences in isolation/sequencing efficiencies between fractions
+      ## normalize to tpm for whole cell since there is no eGFP in this case
+      big_df <- big_df %>% mutate(dmso_f1_eGFP = dmso_f1.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f1.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f2_eGFP = dmso_f2.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f2.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f3_eGFP = dmso_f3.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f3.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f4_eGFP = dmso_f4.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f4.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f5_eGFP = dmso_f5.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f5.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f6_eGFP = dmso_f6.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f6.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f7_eGFP = dmso_f7.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f7.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_f8_eGFP = dmso_f8.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("dmso_f8.fastq.gz.bam", colnames(big_df))]]))),
+                                  dmso_whole_tpm = dmso_whole.fastq.gz.bam/(colSums(big_df[, grep("dmso_whole.fastq.gz.bam", colnames(big_df))])/1000000),
+                                  
+                                  torin_f1_eGFP = torin_f1.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f1.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f2_eGFP = torin_f2.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f2.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f3_eGFP = torin_f3.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f3.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f4_eGFP = torin_f4.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f4.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f5_eGFP = torin_f5.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f5.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f6_eGFP = torin_f6.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f6.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f7_eGFP = torin_f7.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f7.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_f8_eGFP = torin_f8.fastq.gz.bam/(unname(as_vector(big_df[[grep("eGFP", big_df[["ens_transcript"]]), grep("torin_f8.fastq.gz.bam", colnames(big_df))]]))),
+                                  torin_whole_tpm = torin_whole.fastq.gz.bam/(colSums(big_df[, grep("torin_whole.fastq.gz.bam", colnames(big_df))])/1000000))
+      
+    ## normalize to total reads across fractions to get a percent
+    big_df <- big_df %>% mutate(dmso_f1 = dmso_f1_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f2 = dmso_f2_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f3 = dmso_f3_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f4 = dmso_f4_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f5 = dmso_f5_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f6 = dmso_f6_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f7 = dmso_f7_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                dmso_f8 = dmso_f8_eGFP/rowSums(big_df[, grep("dmso_f1_eGFP", colnames(big_df)):grep("dmso_f8_eGFP", colnames(big_df))])*100,
+                                torin_f1 = torin_f1_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f2 = torin_f2_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f3 = torin_f3_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f4 = torin_f4_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f5 = torin_f5_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f6 = torin_f6_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f7 = torin_f7_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100,
+                                torin_f8 = torin_f8_eGFP/rowSums(big_df[, grep("torin_f1_eGFP", colnames(big_df)):grep("torin_f8_eGFP", colnames(big_df))])*100)
+
+        
+    write_csv(x = big_df, file = here::here("20231023_GEO-submission/quantification_filtered_normalized.csv")) 
+    
+    } else {
+    big_df <- read_csv(here("20231023_GEO-submission/quantification_filtered_normalized.csv"))
+
+}
+
+```
+
+4.a. Pull the canonical transcript from ENSEMBL
+Truncate the df to only the relevant columns
+Collapse df to only the canonical transcript for each gene (from ENSEMBL)
+Add TOP mRNAs into df
+
+```{r}
+if(!file.exists(here("canonical_transcript.rds"))) {
+          
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl", version = 110)
+attributes <- listAttributes(ensembl)
+query <- getBM(attributes = c("external_gene_name", "ensembl_gene_id", "ensembl_transcript_id", "transcript_is_canonical"), mart = ensembl)
+query <- as_tibble(query) %>% arrange(desc(transcript_is_canonical))
+canonical_transcripts <- query[!duplicated(query$ensembl_gene_id),]
+
+saveRDS(canonical_transcripts, here("canonical_transcript.rds"))
+
+} else {
+
+          canonical_transcripts <- readRDS(here("canonical_transcript.rds"))
+          
+}
+```
+
+4.b.
+Truncate the df to only the relevant columns
+Collapse df to only the canonical transcript for each gene (from ENSEMBL)
+Add TOP mRNAs into df
+```{r}
+
+if(!file.exists(here("20231023_GEO-submission/quantification_filtered_normalized_truncated.csv"))) {
+
+          big_df_truncated <- big_df %>%
+  dplyr::select(c(gene_id, ens_gene, transcript_id, ens_transcript, transcript_length, transcript_type, reads_dmso:reads_torin,
+                     dmso_f1:dmso_f8, torin_f1:torin_f8, dmso_whole_tpm, torin_whole_tpm)) %>%
+        filter(ens_transcript != "eGFP")
+
+big_df_truncated$ens_transcript <- sub(pattern = "\\.\\d+$", replacement = "", x = big_df_truncated$ens_transcript)
+                                       
+big_df_truncated <- big_df_truncated %>% filter(big_df_truncated$ens_transcript %in% canonical_transcripts$ensembl_transcript_id)
+
+annotated_top_mrnas <- c("RPSA","RPS2","RPS3","RPS3A","RPS4X","RPS5","RPS6","RPS7","RPS8","RPS9","RPS10","RPS11","RPS12","RPS13","RPS14","RPS15","RPS15A","RPS16","RPS17","RPS18","RPS19","RPS20","RPS21","RPS23","RPS24","RPS25","RPS26","RPS27","RPS27A","RPS28","RPS29","FAU","RPLP0","RPLP1","RPLP2","RPL3","RPL4","RPL5","RPL6","RPL7","RPL7A","RPL8","RPL9","RPL10","RPL10A","RPL11","RPL12","RPL13","RPL13A","RPL14","RPL15","RPL17","RPL18","RPL18A","RPL19","RPL21","RPL22","RPL23","RPL23A","RPL24","RPL26","RPL27","RPL27A","RPL28","RPL29","RPL30","RPL31","RPL32","RPL34","RPL35","RPL35A","RPL36","RPL36A","RPL37","RPL37A","RPL38","RPL39","UBA52","RPL41","EIF3A","EIF3E","EIF3F","EIF3H","EIF4B","EEF1A1","EEF1B2","EEF1D","EEF1G","EEF2","RACK1", "PABPC1", "HNRNPA1", "NPM1", "NAP1L1", "TPT1","VIM")
+
+# FAU is RPS30 with a ubiquitin-like domain at the N-terminus; UBA52 is a fusion of ubiquitin at the N-terminues and RPL40 at the C-terminus
+# removed the following genes from list: RPS4Y1 and RPS4Y2 (poorly expressed), RPS27L, RPL3L, RPL7L1, RPL10L, RPL22L1, RPL26L1, RPL36AL, RPL39L
+# therefore, list now includes all abundantly-expressed ribosomal proteins and no ribosomal-protein-like genes
+
+big_df_truncated$annotated_top <- "FALSE"
+big_df_truncated[which(!is.na(match(big_df_truncated$gene_id, annotated_top_mrnas))), "annotated_top"] <- "TRUE"
+big_df_truncated <- big_df_truncated %>% relocate(annotated_top, .before = reads_dmso)
+
+write_csv(x = big_df_truncated, file = here::here("20231023_GEO-submission/quantification_filtered_normalized_truncated.csv"))
+
+} else {
+    big_df_truncated <- read_csv(here("20231023_GEO-submission/quantification_filtered_normalized_truncated.csv"))
+    
+     
+}
+```
+
+
+5. Write a function to make a ggplot of any gene of interest across fractions
+```{r}
+gene_plot <- function(df, gene) {
+        gene_df <- df %>% filter(gene_id == gene)
+        gene_df <- gene_df %>% dplyr::select(c(transcript_id, ens_transcript, transcript_length, transcript_type, reads_dmso:reads_torin, dmso_f1:torin_f8))
+        gene_df <- gene_df %>% pivot_longer(dmso_f1:torin_f8, names_to = c("treatment", "fraction"), names_sep = "_", values_to = "%RNA")
+        
+        geneplot <- ggplot(gene_df, aes(fraction, `%RNA`, group = interaction(treatment, transcript_id))) +
+                geom_line(aes(color = treatment)) +
+                geom_point() +
+                facet_wrap(. ~ transcript_id) +
+                theme_classic() +
+                labs(title = gene) +
+                theme(axis.title.x = element_text(size=14),
+                      axis.title.y = element_text(size=14),
+                      axis.text.x = element_text(size=11),
+                      axis.text.y = element_text(size=11))
+        print(geneplot)
+        
+        geneplot2 <- ggplot(gene_df, aes(fraction, `%RNA`, group = interaction(treatment, transcript_id))) +
+                geom_line(aes(color=reads_dmso)) +
+                geom_point(aes(color=reads_dmso)) +
+                facet_wrap(. ~ treatment) +
+                theme_classic() +
+                labs(title = gene) +
+                theme(axis.title.x = element_text(size=14),
+                      axis.title.y = element_text(size=14),
+                      axis.text.x = element_text(size=11),
+                      axis.text.y = element_text(size=11),
+                      strip.text.x = element_text(size = 12))
+        print(geneplot2)
+}
+
+## example
+gene_plot(df = big_df_truncated, gene = "RACK1")
+```
+
+
+6. Write a function to make a ggplot of all ribosomal proteins (or all proteins of a given class)
+Make a ggplot of all 96 annotated TOP genes
+Superimpose an average line with standard deviations as the upper and lower bounds
+```{r}
+class_plot <- function(df = big_df_truncated, gene_pattern = "^RPL", annotated_top = TRUE, reject = "", gene_type = "protein_coding|transcribed_unprocessed_pseudogene|transcribed_unprocessed_pseudogene|unprocessed_pseudogene|processed_pseudogene|transcribed_unitary_pseudogene|lncRNA|rRNA|snoRNA|snRNA|misc_RNA|Mt_tRNA|Mt_rRNA|scRNA|ribozyme|TEC", line_number = 96, opacity = 0.1,  avg_linewidth = 2, avg_color = "yellow", avg_opacity = 0.1, folder = "plots", outfile = "classplot.pdf", save = "y") {
+          
+          class_df <- df
+          
+          if(nzchar(gene_pattern) == TRUE) {
+                    class_df <- class_df[c(grep(gene_pattern, class_df[["gene_id"]])),]
+                    }
+        
+          if(nzchar(gene_type) == TRUE) {
+                    class_df <- class_df %>%
+                              filter(transcript_type == gene_type)
+                    }
+          
+          if(annotated_top == TRUE) {
+                    class_df <- class_df %>%
+                              filter(annotated_top == TRUE)
+                    title = "TOP"
+          } else {
+                    title = ""
+          }
+          
+          
+          if(nzchar(reject) == TRUE) {
+                    class_df <- class_df[!grepl(reject, class_df[["gene_id"]]),]
+          }
+          
+
+          class_df <- class_df %>%
+                 dplyr::select(c(transcript_id, ens_transcript, transcript_length, transcript_type, reads_dmso:reads_torin, dmso_f1:torin_f8)) %>% 
+                slice_sample(n = line_number) %>%
+                pivot_longer(dmso_f1:torin_f8, names_to = c("treatment", "fraction"), names_sep = "_", values_to = "perc_rna") %>%
+                    group_by(interaction(treatment, fraction))
+          
+          stats <- class_df %>% group_by(interaction(treatment, fraction)) %>% 
+                    summarize(mean = mean(perc_rna, na.rm = TRUE), sd = sd(perc_rna, na.rm = TRUE)) %>%
+                    mutate(lower = mean - sd,upper = mean + sd)
+          
+          class_df <- class_df %>% full_join(stats)
+          
+          classplot <- ggplot(class_df, aes(fraction, perc_rna, group = interaction(treatment, transcript_id))) +
+                    geom_line(aes(color=reads_dmso), alpha = opacity) +
+                    geom_line(data = distinct(class_df, mean, .keep_all = TRUE), aes(fraction, mean), color = avg_color, linewidth = avg_linewidth) +
+                    geom_ribbon(data = distinct(class_df, mean, .keep_all = TRUE), aes(ymin = lower, ymax = upper), fill = avg_color, alpha = avg_opacity) +
+                    facet_wrap(. ~ treatment) +
+                    theme_classic() +
+                    labs(title = paste("All", gene_type, gene_pattern, title, "genes"),
+                         y = "% RNA",
+                         x = "Fraction")
+         
+          if(save == "y") {
+                ggsave(filename = here(folder, outfile), plot = classplot, device = "pdf")    
+          }
+          
+          print(classplot)
+          
+}
+
+## example
+class_plot(df = big_df_truncated, gene_pattern = "", annotated_top = TRUE, reject = "", gene_type = "protein_coding", line_number = 96, opacity = 0.8, avg_linewidth = 1.5, avg_color = "darkorange", avg_opacity = 0.3, folder = "plots", outfile = "20231025_classplot_TOP.pdf", save = "y")
+```
+
+7. Make a ggplot of 96 random non-TOP genes
+
+```{r}
+class_plot(df = big_df_truncated, gene_pattern = "", annotated_top = FALSE, reject = "", gene_type = "protein_coding", line_number = 96, opacity = 0.8, avg_linewidth = 1.5, avg_color = "darkorange", avg_opacity = 0.3, folder = "plots", outfile = "20231025_classplot_non-TOP.pdf", save = "y")
+```
+
+
